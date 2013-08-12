@@ -37,7 +37,8 @@
 
 #include <semaphore.h>
 #include <pthread.h>
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || \
+    defined(__CYGWIN__)
 #include "pthread-fixes.h"
 #endif
 #include <signal.h>

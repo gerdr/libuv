@@ -193,6 +193,11 @@ libuv_la_CFLAGS += -D__EXTENSIONS__ -D_XOPEN_SOURCE=500
 libuv_la_SOURCES += src/unix/sunos.c
 endif
 
+if CYGWIN
+include_HEADERS += include/pthread-fixes.h
+libuv_la_SOURCES += src/unix/cygwin.c src/unix/pthread-fixes.c
+endif
+
 if HAVE_DTRACE
 BUILT_SOURCES = include/uv-dtrace.h
 CLEANFILES += include/uv-dtrace.h
