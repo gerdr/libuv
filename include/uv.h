@@ -1587,6 +1587,10 @@ typedef enum {
   UV_FS_CLOSE,
   UV_FS_READ,
   UV_FS_WRITE,
+  UV_FS_FLUSH,
+  UV_FS_LOCK,
+  UV_FS_UNLOCK,
+  UV_FS_SEEK,
   UV_FS_SENDFILE,
   UV_FS_STAT,
   UV_FS_LSTAT,
@@ -1601,6 +1605,7 @@ typedef enum {
   UV_FS_UNLINK,
   UV_FS_RMDIR,
   UV_FS_MKDIR,
+  UV_FS_MKDIR_P,
   UV_FS_RENAME,
   UV_FS_READDIR,
   UV_FS_LINK,
@@ -1623,6 +1628,12 @@ struct uv_fs_s {
   UV_FS_PRIVATE_FIELDS
 };
 
+#define UV_FS_FLOCK_SHARED        1       /* Shared lock. Read lock */
+#define UV_FS_FLOCK_EXCLUSIVE     2       /* Exclusive lock. Write lock. */
+#define UV_FS_FLOCK_TYPEMASK      0x000F  /* a mask of lock type */
+#define UV_FS_FLOCK_NONBLOCK      0x0010  /* asynchronous block during
+                                            locking the file */
+
 UV_EXTERN void uv_fs_req_cleanup(uv_fs_t* req);
 
 UV_EXTERN int uv_fs_close(uv_loop_t* loop, uv_fs_t* req, uv_file file,
@@ -1634,13 +1645,27 @@ UV_EXTERN int uv_fs_open(uv_loop_t* loop, uv_fs_t* req, const char* path,
 UV_EXTERN int uv_fs_read(uv_loop_t* loop, uv_fs_t* req, uv_file file,
     void* buf, size_t length, int64_t offset, uv_fs_cb cb);
 
+UV_EXTERN int uv_fs_lock(uv_loop_t* loop, uv_fs_t* req, uv_file file,
+    int flags, uv_fs_cb cb);
+
+UV_EXTERN int uv_fs_unlock(uv_loop_t* loop, uv_fs_t* req, uv_file file,
+    uv_fs_cb cb);
+
+UV_EXTERN int uv_fs_seek(uv_loop_t* loop, uv_fs_t* req, uv_file file,
+    int64_t offset, int whence, uv_fs_cb cb);
+
 UV_EXTERN int uv_fs_unlink(uv_loop_t* loop, uv_fs_t* req, const char* path,
     uv_fs_cb cb);
 
 UV_EXTERN int uv_fs_write(uv_loop_t* loop, uv_fs_t* req, uv_file file,
     const void* buf, size_t length, int64_t offset, uv_fs_cb cb);
 
+UV_EXTERN int uv_fs_flush(uv_loop_t* loop, uv_fs_t* req, uv_fs_cb cb);
+
 UV_EXTERN int uv_fs_mkdir(uv_loop_t* loop, uv_fs_t* req, const char* path,
+    int mode, uv_fs_cb cb);
+
+UV_EXTERN int uv_fs_mkdir_p(uv_loop_t* loop, uv_fs_t* req, const char* path,
     int mode, uv_fs_cb cb);
 
 UV_EXTERN int uv_fs_rmdir(uv_loop_t* loop, uv_fs_t* req, const char* path,

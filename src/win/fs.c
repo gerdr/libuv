@@ -508,7 +508,7 @@ void fs__open(uv_fs_t* req) {
     }
     return;
   }
-  result = _open_osfhandle((intptr_t) file, flags);
+
 end:
   SET_REQ_RESULT(req, result);
 }
@@ -571,11 +571,61 @@ void fs__read(uv_fs_t* req) {
   }
 }
 
+void fs__lock(uv_fs_t* req) {
+  const DWORD len = 0xffffffff;
+  HANDLE handle;
+  OVERLAPPED offset;
+
+  int fd = req->fd;
+  int flags = req->flags;
+
+  VERIFY_FD(fd, req);
+
+  handle = (HANDLE) _get_osfhandle(fd);
+  if (handle == INVALID_HANDLE_VALUE) {
+    SET_REQ_RESULT(req, -1);
+    return;
+  }
+
+  flags = ((flags & UV_FS_FLOCK_NONBLOCK) ? LOCKFILE_FAIL_IMMEDIATELY : 0)
+          + ((flags & UV_FS_FLOCK_TYPEMASK) == UV_FS_FLOCK_SHARED
+                                       ? 0 : LOCKFILE_EXCLUSIVE_LOCK);
+
+  memset (&offset, 0, sizeof(offset));
+  if (LockFileEx(handle, flags, 0, len, len, &offset)) {
+    SET_REQ_RESULT(req, 0);
+  } else {
+    SET_REQ_WIN32_ERROR(req, GetLastError());
+  }
+}
+
+void fs__unlock(uv_fs_t* req) {
+  const DWORD len = 0xffffffff;
+  HANDLE handle;
+  OVERLAPPED offset;
+
+  int fd = req->fd;
+
+  VERIFY_FD(fd, req);
+
+  handle = (HANDLE) _get_osfhandle(fd);
+  if (handle == INVALID_HANDLE_VALUE) {
+    SET_REQ_RESULT(req, -1);
+    return;
+  }
+
+  memset (&offset, 0, sizeof(offset));
+  if (UnlockFileEx(handle, 0, len, len, &offset)) {
+    SET_REQ_RESULT(req, 0);
+  } else {
+    SET_REQ_WIN32_ERROR(req, GetLastError());
+  }
+}
 
 void fs__write(uv_fs_t* req) {
   int fd = req->fd;
-  size_t length = req->length;
-  int64_t offset = req->offset;
+  const size_t length = req->length;
+  const int64_t offset = req->offset;
   HANDLE handle;
   OVERLAPPED overlapped, *overlapped_ptr;
   LARGE_INTEGER offset_;
@@ -613,6 +663,66 @@ void fs__write(uv_fs_t* req) {
   }
 }
 
+void fs__flush(uv_fs_t* req) {
+  int fd = req->fd;
+  const size_t length = req->length;
+  const int64_t offset = req->offset;
+  char *buffer = req->buf;
+  ssize_t left = length;
+  HANDLE handle;
+  OVERLAPPED overlapped, *overlapped_ptr;
+  LARGE_INTEGER offset_;
+  DWORD bytes;
+
+  VERIFY_FD(fd, req);
+
+  handle = (HANDLE) _get_osfhandle(fd);
+  if (handle == INVALID_HANDLE_VALUE) {
+    SET_REQ_RESULT(req, -1);
+    return;
+  }
+
+  if (length > INT_MAX) {
+    SET_REQ_WIN32_ERROR(req, ERROR_INSUFFICIENT_BUFFER);
+    return;
+  }
+
+  if (offset != -1) {
+    memset(&overlapped, 0, sizeof overlapped);
+
+    offset_.QuadPart = offset;
+    overlapped.Offset = offset_.LowPart;
+    overlapped.OffsetHigh = offset_.HighPart;
+
+    overlapped_ptr = &overlapped;
+  } else {
+    overlapped_ptr = NULL;
+  }
+
+  do {
+    if (WriteFile(handle, buffer, left, &bytes, overlapped_ptr)) {
+      buffer += bytes;
+      left   -= bytes;
+    } else {
+      SET_REQ_WIN32_ERROR(req, GetLastError());
+      return;
+    }
+  } while (left > 0);
+
+  SET_REQ_RESULT(req, length);
+}
+
+void fs__seek(uv_fs_t* req) {
+  ssize_t r;
+
+  r = (ssize_t)_lseeki64(req->fd, req->offset, req->origin);
+
+  if (r == -1) {
+    SET_REQ_WIN32_ERROR(req, GetLastError());
+  } else {
+    SET_REQ_RESULT(req, r);
+  }
+}
 
 void fs__rmdir(uv_fs_t* req) {
   int result = _wrmdir(req->pathw);
@@ -694,6 +804,44 @@ void fs__mkdir(uv_fs_t* req) {
   SET_REQ_RESULT(req, result);
 }
 
+static int fs___mkdir_p(wchar_t *pathname) {
+  size_t r;
+  size_t len = wcslen(pathname);
+
+  while (len > 0 && IS_SLASH(pathname[len - 1]))
+    len--;
+
+  pathname[len] = L'\0';
+
+  r = _wmkdir(pathname);
+
+  if (r == -1 && errno == ENOENT) {
+    size_t _len = len;
+
+    while (_len > 0 && IS_SLASH(pathname[_len - 1]))
+      _len--;
+
+    pathname[_len] = L'\0';
+
+    r = fs___mkdir_p(pathname);
+
+    pathname[_len] = L'/';
+
+    if(r == 0) {
+      r = _wmkdir(pathname);
+    }
+  }
+
+  pathname[len] = L'/';
+
+  return r;
+}
+
+void fs__mkdir_p(uv_fs_t* req) {
+  /* TODO: use req->mode. */
+  int result = fs___mkdir_p(req->pathw);
+  SET_REQ_RESULT(req, result);
+}
 
 void fs__readdir(uv_fs_t* req) {
   WCHAR* pathw = req->pathw;
@@ -1434,6 +1582,10 @@ static DWORD WINAPI uv_fs_thread_proc(void* parameter) {
     XX(CLOSE, close)
     XX(READ, read)
     XX(WRITE, write)
+    XX(FLUSH, flush)
+    XX(LOCK, lock)
+    XX(UNLOCK, unlock)
+    XX(SEEK, seek)
     XX(SENDFILE, sendfile)
     XX(STAT, stat)
     XX(LSTAT, lstat)
@@ -1448,6 +1600,7 @@ static DWORD WINAPI uv_fs_thread_proc(void* parameter) {
     XX(UNLINK, unlink)
     XX(RMDIR, rmdir)
     XX(MKDIR, mkdir)
+    XX(MKDIR_P, mkdir_p)
     XX(RENAME, rename)
     XX(READDIR, readdir)
     XX(LINK, link)
@@ -1520,6 +1673,36 @@ int uv_fs_read(uv_loop_t* loop, uv_fs_t* req, uv_file fd, void* buf,
   }
 }
 
+UV_EXTERN int uv_fs_lock(uv_loop_t* loop, uv_fs_t* req, uv_file fd,
+    int flags, uv_fs_cb cb) {
+  uv_fs_req_init(loop, req, UV_FS_LOCK, cb);
+
+  req->fd = fd;
+  req->flags = flags;
+
+  if (cb) {
+    QUEUE_FS_TP_JOB(loop, req);
+    return 0;
+  } else {
+    fs__lock(req);
+    return req->result;
+  }
+}
+
+UV_EXTERN int uv_fs_unlock(uv_loop_t* loop, uv_fs_t* req, uv_file fd,
+    uv_fs_cb cb) {
+  uv_fs_req_init(loop, req, UV_FS_UNLOCK, cb);
+
+  req->fd = fd;
+
+  if (cb) {
+    QUEUE_FS_TP_JOB(loop, req);
+    return 0;
+  } else {
+    fs__unlock(req);
+    return req->result;
+  }
+}
 
 int uv_fs_write(uv_loop_t* loop, uv_fs_t* req, uv_file fd, const void* buf,
     size_t length, int64_t offset, uv_fs_cb cb) {
@@ -1539,6 +1722,34 @@ int uv_fs_write(uv_loop_t* loop, uv_fs_t* req, uv_file fd, const void* buf,
   }
 }
 
+int uv_fs_flush(uv_loop_t* loop, uv_fs_t* req, uv_fs_cb cb) {
+  uv_fs_req_init(loop, req, UV_FS_FLUSH, cb);
+
+  if (cb) {
+    QUEUE_FS_TP_JOB(loop, req);
+    return 0;
+  } else {
+    fs__flush(req);
+    return req->result;
+  }
+}
+
+int uv_fs_seek(uv_loop_t* loop, uv_fs_t* req, uv_file fd,
+    int64_t offset, int origin, uv_fs_cb cb) {
+  uv_fs_req_init(loop, req, UV_FS_SEEK, cb);
+
+  req->fd = fd;
+  req->offset = offset;
+  req->origin = origin;
+
+  if (cb) {
+    QUEUE_FS_TP_JOB(loop, req);
+    return 0;
+  } else {
+    fs__seek(req);
+    return req->result;
+  }
+}
 
 int uv_fs_unlink(uv_loop_t* loop, uv_fs_t* req, const char* path,
     uv_fs_cb cb) {
@@ -1583,6 +1794,27 @@ int uv_fs_mkdir(uv_loop_t* loop, uv_fs_t* req, const char* path, int mode,
   }
 }
 
+int uv_fs_mkdir_p(uv_loop_t* loop, uv_fs_t* req, const char* path, int mode,
+    uv_fs_cb cb) {
+  int err;
+
+  uv_fs_req_init(loop, req, UV_FS_MKDIR_P, cb);
+
+  err = fs__capture_path(loop, req, path, NULL, cb != NULL);
+  if (err) {
+    return uv_translate_sys_error(err);
+  }
+
+  req->mode = mode;
+
+  if (cb) {
+    QUEUE_FS_TP_JOB(loop, req);
+    return 0;
+  } else {
+    fs__mkdir_p(req);
+    return req->result;
+  }
+}
 
 int uv_fs_rmdir(uv_loop_t* loop, uv_fs_t* req, const char* path, uv_fs_cb cb) {
   int err;
